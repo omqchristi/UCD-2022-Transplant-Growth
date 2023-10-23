@@ -1,0 +1,248 @@
+---
+title: "Oct 10--multiple data sheets"
+author: "Julin Maloof"
+date: "2023-10-08"
+output: html_document
+---
+
+## Intro
+The goal is to import all of the size survey data sheets for the transplants into a single tibble.  We will work through the commands and challenges of doing this
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+## Github
+Let's practice working with github.  Go to your github account and create a new repository "UCD-2022-Transplant-Growth" (or something similar).
+
+* Clone this to your computer and make sure Rstudio is set to use it as the working directory.
+* Create folders inside of this repo `scripts`, `input`, and `output`.
+* Unzip the `CorrectedCSVs.zip` file that Julin gave you into the  `input` directory
+* Create a new .Rmd script inside of scripts `DataImport.Rmd` or something similar.
+
+## Get a list of files
+
+Use code chunks in the `DataImport.Rmd` as we work through the rest of this.
+
+You can get a list of files in a directory with the `dir` command.  By default this lists files in the current working directory
+```{r}
+files <- dir()
+files
+```
+
+
+You can specify a different directory by specifying the path
+```{r}
+files <- dir("../input/CorrectedCSVs/") 
+files
+```
+You can specify what files you want using the pattern argument.  Modify the code below so that you only retrieve size survey transplant csv files.  You will need to use the _regex_ method of specifying wildcards:
+```{r}
+files <- dir("../input/CorrectedCSVs/",
+             pattern="Size_survey_transplants_.*csv")
+files
+```
+
+Finally, when can specify `full.names=TRUE` to get the full path, which we will need later on
+
+```{r}
+files <- dir("../input/CorrectedCSVs/",
+             pattern="Size_survey_transplants_.*csv",
+             full.names=TRUE)
+files
+```
+
+## Create a tibble to hold the imported data
+
+We will use a tibble to hold our imported data.  We will start by creating a column with the full pathname and the file name:
+
+```{r}
+dat <- tibble(path=files, filename=basename(path))
+dat
+```
+
+What did the `basename` function do?
+-- Removes the pathway stuff
+
+Next, use what you learned in the regex tutorial to create a new column "survey_date", extracted from the filename
+
+```{r}
+dat <- dat %>%
+  mutate(survey_date=str_replace(filename, "Size_survey_transplants_(.*)_cor.*", "\\1"))
+  #mutate(survey_date=str_extract(filename, "[0-9]{8}"))
+  #mutate(survey_date=str_remove_all(filename, "Size_survey_transplants_|_corrected.csv"))
+dat
+```
+
+Once you have the date column, we can tell R to use it as a date with the `ymd` function.  (Note there are other variants as well...)
+```{r}
+dat <- dat %>%
+  mutate(survey_date=lubridate::ymd(survey_date))
+dat
+```
+
+## Read in the files
+
+As you know, we can use `read_csv` to read in csv files.  We don't want to have to type a separate `read_csv` command for each file that we want to read.  Luckily there is a way to automate the process.
+
+We will use the `map()` function to help us.  `map` applies a function eo each element of a list
+
+Example:
+```{r}
+map(1:10, sum, 5)
+```
+
+What did the above code do?
+
+List out 1 through 10, and then add 5 to each one
+
+So to import our data:
+
+this is the old import: we pasted a new one right under it
+```{r, eval = FALSE}
+dat <- dat %>%
+  mutate(sheets=map(path, read_csv)) %>%
+  select(-path)
+
+dat
+```
+
+```{r}
+dat <- dat %>%
+  mutate(sheets=map(path, 
+                    read_csv, 
+                    col_types=cols(.default=col_character()), # forces all columns to be character columns (<chr>)
+                    na = c("", "NA", "-") # sets a space, the NA, and the dash to mean N/A
+                    )) %>%
+  select(-path)
+dat
+```
+
+
+Now we have a new column "sheets" and each element of sheets is one imported csv file.  You can check this with:
+
+```{r}
+dat$sheets[[1]] # extract the first imported sheet.
+```
+
+
+## Combine the data
+
+We would like to get all of those datasheets combined into a single one.  Before we do that we want to make sure that the column names are consistent.  We can look at the column names by using map again:
+
+```{r}
+map(dat$sheets, colnames)
+```
+
+It could be useful to look at all of the unique column names
+
+```{r}
+map(dat$sheets, colnames) %>%
+  unlist() %>%
+  unique() %>%
+  sort()
+```
+Overall looks good.  There are some extra column names, but I don't see any variants of the key column names.
+There are two "date/Date", but we will not need that, so we can ignore it.
+
+Next let's take a look at the first 10 lines of each data sheet, again using `map`
+```{r}
+map(dat$sheets, head,10)
+```
+Any issues?  (will discuss in live meeting)
+dbl - double = number
+chr - character = character
+
+Now let's combine the data.  The `unnest()` function will attempt to combine all of the individual data frames into one.  While we are at it, let's rename a couple of the columns for convenience:
+
+```{r}
+dat <- dat %>% unnest(sheets) %>%
+  rename(height_cm = `height (cm)`, longest_leaf_cm = `longest leaf (cm)`)
+dat
+```
+
+Darn, an error!  
+
+What is happening?  This is telling us that in the first csv the column "row" contains characters, whereas in the second csv it is all numbers ("double").
+
+To troubleshoot, we can just force them all to be imported as character type and then figure out what is causing the problem.
+
+Update your import function to what is shown below.  __Note__ you will have to recreate `dat` first, since we got rid of the `path` column.  It will be easiest just to change the original code above and rerun everything.
+
+```{r}
+dat <- dat %>%
+  mutate(sheets=map(path, 
+                    read_csv, 
+                    col_types=cols(.default=col_character()), # forces all columns to be character columns (<chr>)
+                    na = c("", "NA", "-") # sets a space, the NA, and the dash to mean N/A
+                    )) %>%
+  select(-path)
+
+dat
+```
+## Fix the data problems
+
+OK, row should be numeric, but isn't.  Let's see why not
+
+This code goes row-by-row and keeps the rows where `row` cannot be converted to numeric.
+```{r}
+dat %>% rowwise() %>% filter(is.na(as.numeric(row)))
+```
+
+rowwise - go row by row
+go and see which rows cannot be converted to <dbl>
+
+What is the problem?
+- undeleted headers
+
+What is the fix?
+- find a delete these columns
+
+```{r}
+dat <- dat %>% filter(row != "row" )
+dat
+```
+
+Next steps: check the other columns that should be numeric, and fix if needed.
+
+```{r}
+dat %>% rowwise() %>% filter(is.na(as.numeric(mf))) %>% select(filename, mf)
+dat %>% rowwise() %>% filter(is.na(as.numeric(rep))) %>% select(filename, rep)
+dat %>% rowwise() %>% filter(is.na(as.numeric(height_cm))) %>% select(filename, height_cm)
+dat %>% rowwise() %>% filter(is.na(as.numeric(longest_leaf_cm))) %>% select(filename, longest_leaf_cm)
+``` 
+
+```{r}
+dat <- dat %>% 
+  mutate(row=as.numeric(row),
+         mf=as.numeric(mf),
+         rep=as.numeric(rep),
+         height_cm=as.numeric(height_cm),
+         longest_leaf_cm=as.numeric(longest_leaf_cm))
+dat
+```
+
+
+```{r}
+dat %>%
+  ggplot(mapping=aes(y=height_cm,x=survey_date, color=pop)) +
+  geom_point()
+
+dat %>%
+  ggplot(mapping=aes(y=height_cm,x=survey_date, color=pop)) +
+  geom_boxplot()
+```
+
+```{r}
+dat %>% arrange(desc(height_cm)) %>% select(survey_date, pop, mf, height_cm) # check the highest value of height_cm 
+
+dat %>% filter(pop=="YO7", mf=="8", survey_date=="2023-04-24", height_cm=="612")
+
+dat %>% filter(pop==".VTR"|pop=="VTR")
+
+```
+
